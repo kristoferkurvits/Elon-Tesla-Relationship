@@ -47,4 +47,7 @@ ggplot(daily_summary, aes(x = total_likes, y = price_movement)) +
        x = "Total Likes",
        y = "Price Movement")
 
+#correlation between sum of tweet likes in a day and TSLA stock price movement
+cor(daily_summary$total_likes, daily_summary$price_movement, use = "complete.obs")
+
 
