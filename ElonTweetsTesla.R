@@ -7,11 +7,24 @@ install.packages("tidymodels")
 install.packages("textrecipes")
 install.packages("randomForest")
 
+install.packages("broom")
+install.packages("caret")
+install.packages("pROC")
 
 library(dplyr)
 library(tidyverse)
 library(lubridate)
 
+library(tidymodels)
+library(textrecipes)
+library(randomForest)
+
+library(broom)      # For tidying model outputs
+library(caret)
+
+library(pROC)
+
+library(ggplot2)
 
 csv_files <- list.files(path="tweets",pattern= ".csv", full.names=TRUE)
 csv_files
@@ -43,14 +56,10 @@ merged_data <- merge(tweet_data, stock_data, by = "date")
 
 merged_data$price_movement <- ((merged_data$close - merged_data$open) / merged_data$open) * 100
 
+data <- merged_data
+
 data_grouped <- data %>%
   group_by(date)
-
-
-# You can now perform operations on each group
-# For example, to summarize with mean of 'nlikes'
-daily_summary <- data_grouped %>%
-  summarise(mean_likes = mean(nlikes, na.rm = TRUE))
 
 # If you want to include multiple summaries
 daily_summary <- data_grouped %>%
@@ -59,9 +68,11 @@ daily_summary <- data_grouped %>%
     total_replies = sum(nreplies, na.rm = TRUE),
     total_retweets = sum(nretweets, na.rm = TRUE),
     volume = mean(volume, na.rm = TRUE),
-    price_movement = mean(price_movement, na.rm = TRUE),
-    price_movement_binary = mean(price_movement_binary, na.rm = TRUE),
+    price_movement = mean(price_movement, na.rm = TRUE)
   )
+
+# First, create a target binary variable for stock movement: 1 for increase, 0 for decrease/no change
+daily_summary$price_movement_binary <- ifelse(daily_summary$price_movement > 0, 1, 0)
 
 daily_summary_long <- daily_summary %>%
   pivot_longer(cols = c(total_likes, total_replies, total_retweets, volume), 
@@ -77,41 +88,11 @@ ggplot(daily_summary_long, aes(x = value, y = price_movement)) +
   theme_minimal() +
   theme(legend.position = "bottom")
 
-
-
-
-# Plot
-ggplot(daily_summary, aes(x = total_likes, y = price_movement)) +
-  geom_point() +
-  geom_smooth(method = "lm", se = FALSE) +
-  labs(title = "Tweet Likes vs Stock Price Movement",
-       x = "Total Likes",
-       y = "Price Movement")
-
-#correlation between sum of tweet likes in a day and TSLA stock price movement
-cor(daily_summary$total_likes, daily_summary$price_movement, use = "complete.obs")
-
-
-library(tidymodels)
-library(textrecipes)
-library(randomForest)
-
-# Load your datasets
-# Assume tweet_data and stock_data have been merged into a single dataframe called 'data'
-data <- merged_data
-
-# First, create a target binary variable for stock movement: 1 for increase, 0 for decrease/no change
-data$price_movement_binary <- ifelse(data$price_movement > 0, 1, 0)
-
 # To see the result
 print(daily_summary)
 
-# Preprocessing: Convert 'hashtags' and 'cashtags' into counts
-#data$hashtag_count <- str_count(data$tweet, "#")
-#data$cashtag_count <- str_count(data$tweet, "\\$")
-
-# Create sentiment scores (this assumes you have a way to calculate it)
-# data$sentiment_score <- sentiment_analysis_function(data$tweet)
+#correlation between sum of tweet likes in a day and TSLA stock price movement
+cor(daily_summary$total_likes, daily_summary$price_movement, use = "complete.obs")
 
 # Select features
 features <- daily_summary %>%
@@ -120,11 +101,6 @@ features <- daily_summary %>%
 # Split data into training and test sets
 set.seed(123) # For reproducibility
 
-
-install.packages("broom")
-install.packages("caret")
-library(broom)      # For tidying model outputs
-library(caret) 
 
 # Create the partition
 training_indices <- createDataPartition(features$price_movement_binary, p = 0.8, list = FALSE)
@@ -143,9 +119,15 @@ summary(logit_model)
 
 # Predict on the test set
 test_data$predicted_class <- predict(logit_model, newdata = test_data, type = "response")
+
+
+# Optionally, calculate and plot ROC curve
+
+roc_curve <- roc(test_data$price_movement_binary, test_data$predicted_class)
+plot(roc_curve)
+
+
 test_data$predicted_class <- ifelse(test_data$predicted_class > 0.5, "Increase", "Decrease")
-
-
 test_data$predicted_class <- factor(test_data$predicted_class, levels = c("Increase", "Decrease"))
 
 test_data$price_movement_binary <- ifelse(test_data$price_movement_binary > 0, "Increase", "Decrease")
@@ -162,15 +144,7 @@ print(conf_matrix)
 # Balanced Accuracy, which is the average of sensitivity and specificity, is 0.5307, just slightly better than a random guess, suggesting that the model's ability to classify both positive and negative classes is not impressive.
 
 
-# Optionally, calculate and plot ROC curve
-library(pROC)
-roc_curve <- roc(test_data$price_movement_binary, test_data$predicted_class)
-plot(roc_curve)
-
-
-
-
-#######################
+####################### RANDOM FOREST #######################
 split <- initial_split(features, prop = 0.8)
 train_data <- training(split)
 test_data <- testing(split)
@@ -210,15 +184,11 @@ rf_results
 confusion_matrix <- confusionMatrix(rf_results$pred, rf_results$obs)
 print(confusion_matrix)
 
-install.packages("pROC")
-library(pROC)
 predicted_probabilities <- predict(rf_fit, test_data, type = "prob")
 
 roc_curve <- roc(predicted_probabilities$.pred_0, predicted_probabilities$.pred_0)
 autoplot(roc_curve)
 
-
-library(ggplot2)
 
 model_importance <- importance(rf_fit$fit)
 
