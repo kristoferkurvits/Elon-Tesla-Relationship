@@ -34,54 +34,14 @@ tweet_data <- tweet_data %>% distinct(link, .keep_all = TRUE)
 
 stock_data <- read.csv("tesla/tesla20102022.csv")
 
-
 stock_data$date <- as.Date(stock_data$date)
 tweet_data$date <- as.Date(tweet_data$date)
 tweet_data <- tweet_data %>% filter(date >= as.Date("2015-01-01") & date < as.Date("2022-01-01"))
 stock_data <- stock_data %>% filter(date >= as.Date("2015-01-01") & date < as.Date("2022-01-01"))
 
-
-head(merged_df)
-head(stock_data)
 merged_data <- merge(tweet_data, stock_data, by = "date")
-head(merged_data)
-
-daily_summary
-
-max(tweet_data$date)
-max(stock_data$date)
 
 merged_data$price_movement <- ((merged_data$close - merged_data$open) / merged_data$open) * 100
-
-daily_summary <- merged_data %>%
-  group_by(date) %>%
-  summarise(total_likes = sum(nlikes), 
-            price_movement = mean(price_movement))
-
-# Plot
-ggplot(daily_summary, aes(x = total_likes, y = price_movement)) +
-  geom_point() +
-  geom_smooth(method = "lm", se = FALSE) +
-  labs(title = "Tweet Likes vs Stock Price Movement",
-       x = "Total Likes",
-       y = "Price Movement")
-
-#correlation between sum of tweet likes in a day and TSLA stock price movement
-cor(daily_summary$total_likes, daily_summary$price_movement, use = "complete.obs")
-
-
-library(tidymodels)
-library(textrecipes)
-library(randomForest)
-
-# Load your datasets
-# Assume tweet_data and stock_data have been merged into a single dataframe called 'data'
-data <- merged_data
-na.omit(data)
-sum(is.na(data))
-
-# First, create a target binary variable for stock movement: 1 for increase, 0 for decrease/no change
-data$price_movement_binary <- ifelse(data$price_movement > 0, 1, 0)
 
 data_grouped <- data %>%
   group_by(date)
@@ -103,9 +63,48 @@ daily_summary <- data_grouped %>%
     price_movement_binary = mean(price_movement_binary, na.rm = TRUE),
   )
 
+daily_summary_long <- daily_summary %>%
+  pivot_longer(cols = c(total_likes, total_replies, total_retweets, volume), 
+               names_to = "metric", values_to = "value")
+
+# Now, create a scatter plot with faceting
+ggplot(daily_summary_long, aes(x = value, y = price_movement)) +
+  geom_point(aes(color = metric)) +  # Color points by metric for clarity
+  facet_wrap(~ metric, scales = "free_x") +  # Create a separate plot for each metric
+  labs(title = "Price Movement vs. Various Metrics",
+       x = "Metric Value",
+       y = "Price Movement (%)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+
+
+
+# Plot
+ggplot(daily_summary, aes(x = total_likes, y = price_movement)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Tweet Likes vs Stock Price Movement",
+       x = "Total Likes",
+       y = "Price Movement")
+
+#correlation between sum of tweet likes in a day and TSLA stock price movement
+cor(daily_summary$total_likes, daily_summary$price_movement, use = "complete.obs")
+
+
+library(tidymodels)
+library(textrecipes)
+library(randomForest)
+
+# Load your datasets
+# Assume tweet_data and stock_data have been merged into a single dataframe called 'data'
+data <- merged_data
+
+# First, create a target binary variable for stock movement: 1 for increase, 0 for decrease/no change
+data$price_movement_binary <- ifelse(data$price_movement > 0, 1, 0)
+
 # To see the result
 print(daily_summary)
-
 
 # Preprocessing: Convert 'hashtags' and 'cashtags' into counts
 #data$hashtag_count <- str_count(data$tweet, "#")
@@ -127,9 +126,14 @@ install.packages("caret")
 library(broom)      # For tidying model outputs
 library(caret) 
 
+# Create the partition
 training_indices <- createDataPartition(features$price_movement_binary, p = 0.8, list = FALSE)
+
+# Split the data
 train_data <- features[training_indices, ]
 test_data <- features[-training_indices, ]
+
+test_data
 
 # Fit the logistic regression model
 logit_model <- glm(price_movement_binary ~ ., data = train_data, family = binomial)
@@ -140,40 +144,28 @@ summary(logit_model)
 # Predict on the test set
 test_data$predicted_class <- predict(logit_model, newdata = test_data, type = "response")
 test_data$predicted_class <- ifelse(test_data$predicted_class > 0.5, "Increase", "Decrease")
-test_data$predicted_class <- as.factor(test_data$predicted_class)
 
-test_data$price_movement_binary <- factor(test_data$price_movement_binary, levels = c("Decrease", "Increase"))
 
+test_data$predicted_class <- factor(test_data$predicted_class, levels = c("Increase", "Decrease"))
+
+test_data$price_movement_binary <- ifelse(test_data$price_movement_binary > 0, "Increase", "Decrease")
+test_data$price_movement_binary <- factor(test_data$price_movement_binary, levels = c("Increase", "Decrease"))
+
+test_data
 # Evaluate model performance
 conf_matrix <- confusionMatrix(test_data$predicted_class, test_data$price_movement_binary)
 print(conf_matrix)
+
+# Sensitivity (also called the true positive rate or recall) is quite high at 0.8613, meaning the model is good at identifying the positive class.
+# Specificity is very low at 0.2000, indicating that the model is not good at identifying the negative class.
+# Positive Predictive Value (PPV) and Negative Predictive Value (NPV) are around 0.54 and 0.56, respectively, which are not much better than a random guess.
+# Balanced Accuracy, which is the average of sensitivity and specificity, is 0.5307, just slightly better than a random guess, suggesting that the model's ability to classify both positive and negative classes is not impressive.
+
 
 # Optionally, calculate and plot ROC curve
 library(pROC)
 roc_curve <- roc(test_data$price_movement_binary, test_data$predicted_class)
 plot(roc_curve)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
