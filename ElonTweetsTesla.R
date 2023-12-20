@@ -2,12 +2,18 @@
 install.packages("dplyr")
 install.packages("tidyverse")
 install.packages("lubridate")
+
+install.packages("tidymodels")
+install.packages("textrecipes")
+install.packages("randomForest")
+
+
 library(dplyr)
 library(tidyverse)
 library(lubridate)
 
 
-csv_files <- list.files(path="Elon-Tesla-Relationship/tweets",pattern= ".csv", full.names=TRUE)
+csv_files <- list.files(path="tweets",pattern= ".csv", full.names=TRUE)
 csv_files
 needed_parameters <- c("id", "date", "tweet", "hashtags", "cashtags", "username", "link", "retweet", "nlikes", "nreplies", "nretweets", "retweet_id", "retweet_date")
 needed_parameters
@@ -26,7 +32,7 @@ merged_df <- bind_rows(tweet_data)
 tweet_data <- merged_df
 tweet_data <- tweet_data %>% distinct(link, .keep_all = TRUE)
 
-stock_data <- read.csv("Elon-Tesla-Relationship/tesla/tesla20102022.csv")
+stock_data <- read.csv("tesla/tesla20102022.csv")
 
 
 stock_data$date <- as.Date(stock_data$date)
@@ -39,6 +45,8 @@ head(merged_df)
 head(stock_data)
 merged_data <- merge(tweet_data, stock_data, by = "date")
 head(merged_data)
+
+daily_summary
 
 max(tweet_data$date)
 max(stock_data$date)
@@ -62,3 +70,184 @@ ggplot(daily_summary, aes(x = total_likes, y = price_movement)) +
 cor(daily_summary$total_likes, daily_summary$price_movement, use = "complete.obs")
 
 
+library(tidymodels)
+library(textrecipes)
+library(randomForest)
+
+# Load your datasets
+# Assume tweet_data and stock_data have been merged into a single dataframe called 'data'
+data <- merged_data
+na.omit(data)
+sum(is.na(data))
+
+# First, create a target binary variable for stock movement: 1 for increase, 0 for decrease/no change
+data$price_movement_binary <- ifelse(data$price_movement > 0, 1, 0)
+
+data_grouped <- data %>%
+  group_by(date)
+
+
+# You can now perform operations on each group
+# For example, to summarize with mean of 'nlikes'
+daily_summary <- data_grouped %>%
+  summarise(mean_likes = mean(nlikes, na.rm = TRUE))
+
+# If you want to include multiple summaries
+daily_summary <- data_grouped %>%
+  summarise(
+    total_likes = sum(nlikes, na.rm = TRUE),
+    total_replies = sum(nreplies, na.rm = TRUE),
+    total_retweets = sum(nretweets, na.rm = TRUE),
+    volume = mean(volume, na.rm = TRUE),
+    price_movement = mean(price_movement, na.rm = TRUE),
+    price_movement_binary = mean(price_movement_binary, na.rm = TRUE),
+  )
+
+# To see the result
+print(daily_summary)
+
+
+# Preprocessing: Convert 'hashtags' and 'cashtags' into counts
+#data$hashtag_count <- str_count(data$tweet, "#")
+#data$cashtag_count <- str_count(data$tweet, "\\$")
+
+# Create sentiment scores (this assumes you have a way to calculate it)
+# data$sentiment_score <- sentiment_analysis_function(data$tweet)
+
+# Select features
+features <- daily_summary %>%
+  select(total_likes, total_replies, total_retweets, price_movement_binary)
+
+# Split data into training and test sets
+set.seed(123) # For reproducibility
+
+
+install.packages("broom")
+install.packages("caret")
+library(broom)      # For tidying model outputs
+library(caret) 
+
+training_indices <- createDataPartition(features$price_movement_binary, p = 0.8, list = FALSE)
+train_data <- features[training_indices, ]
+test_data <- features[-training_indices, ]
+
+# Fit the logistic regression model
+logit_model <- glm(price_movement_binary ~ ., data = train_data, family = binomial)
+
+# Summary of the model to see coefficients and significance
+summary(logit_model)
+
+# Predict on the test set
+test_data$predicted_class <- predict(logit_model, newdata = test_data, type = "response")
+test_data$predicted_class <- ifelse(test_data$predicted_class > 0.5, "Increase", "Decrease")
+test_data$predicted_class <- as.factor(test_data$predicted_class)
+
+test_data$price_movement_binary <- factor(test_data$price_movement_binary, levels = c("Decrease", "Increase"))
+
+# Evaluate model performance
+conf_matrix <- confusionMatrix(test_data$predicted_class, test_data$price_movement_binary)
+print(conf_matrix)
+
+# Optionally, calculate and plot ROC curve
+library(pROC)
+roc_curve <- roc(test_data$price_movement_binary, test_data$predicted_class)
+plot(roc_curve)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#######################
+split <- initial_split(features, prop = 0.8)
+train_data <- training(split)
+test_data <- testing(split)
+
+# Train the Random Forest model
+rf_spec <- rand_forest(trees = 100) %>%
+  set_mode("classification") %>%
+  set_engine("randomForest")
+
+# Fit model using a formula that specifies our binary outcome and all other columns as predictors
+train_data$price_movement_binary <- as.factor(train_data$price_movement_binary)
+
+test_data$price_movement_binary <- as.factor(test_data$price_movement_binary)
+# Now, fit the model with the outcome as a factor
+rf_fit <- rf_spec %>%
+  fit(price_movement_binary ~ ., data = train_data)
+
+# Now retry prediction
+rf_results <- rf_fit %>%
+  predict(test_data) %>%
+  bind_cols(test_data) %>%
+  metrics(truth = price_movement_binary, estimate = .pred_class)
+
+rf_results
+
+# The accuracy is the proportion of the total number of predictions that were correct. In this case, it's 0.494, or 49.4%, which indicates that the model is correct about half the time.
+# The kappa statistic (kap) measures the agreement between the predicted and actual classifications, corrected for the agreement that could happen by chance. A kappa value near 0 (0.000514 in this case) indicates that there is hardly any agreement between the predictions and the actuals other than what would be expected by chance.
+# Given this information, here is what you can interpret:
+# 
+# The model's performance is close to random guessing on your dataset, as indicated by an accuracy of 49.4%, which is nearly a 50/50 chance. This could suggest that the model is not capturing the patterns in the data effectively, or that the data doesn't contain strong signals for the model to learn from.
+# 
+# The kappa statistic being close to zero further confirms that the model is not performing well. A good model should have a kappa statistic significantly higher than zero.
+
+
+#Interpretation
+
+confusion_matrix <- confusionMatrix(rf_results$pred, rf_results$obs)
+print(confusion_matrix)
+
+install.packages("pROC")
+library(pROC)
+predicted_probabilities <- predict(rf_fit, test_data, type = "prob")
+
+roc_curve <- roc(predicted_probabilities$.pred_0, predicted_probabilities$.pred_0)
+autoplot(roc_curve)
+
+
+library(ggplot2)
+
+model_importance <- importance(rf_fit$fit)
+
+# Make it into a data frame for easy plotting
+importance_df <- as.data.frame(model_importance)
+
+# Plotting variable importance
+importance_df$variable <- rownames(importance_df)
+
+ggplot(importance_df, aes(x = reorder(variable, MeanDecreaseGini), y = MeanDecreaseGini)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Variable Importance", x = "Variables", y = "Importance") +
+  theme_minimal()
+
+# What is Feature Importance?
+#   Feature importance measures the relative contribution of each feature to the prediction power of the model. It is a way to understand which features are contributing the most to the model’s decisions.
+# 
+# How is it Calculated?
+#   In Random Forest, feature importance is typically calculated in one of two ways:
+#   
+#   Mean Decrease in Impurity (MDI): During the construction of the Random Forest, each feature contributes to the purity of the nodes it is used in. Purity is often measured by Gini impurity or entropy for classification, and variance for regression. A feature's importance in this case is the sum of the decrease in impurity it provides weighted by the proportion of samples that reached the nodes where the feature was used.
+# 
+# Mean Decrease in Accuracy (MDA): Also known as permutation importance, this involves shuffling the values of each feature one by one and measuring the decrease in the model's accuracy. A larger decrease indicates a more important feature.
