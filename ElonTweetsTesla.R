@@ -24,13 +24,15 @@ for (file in csv_files) {
 merged_df <- bind_rows(tweet_data)
 
 tweet_data <- merged_df
+tweet_data <- tweet_data %>% distinct(link, .keep_all = TRUE)
+
 stock_data <- read.csv("Elon-Tesla-Relationship/tesla/tesla20102022.csv")
 
 
 stock_data$date <- as.Date(stock_data$date)
 tweet_data$date <- as.Date(tweet_data$date)
-tweet_data <- tweet_data %>% filter(date >= as.Date("2015-01-01") & date <= as.Date("2022-01-01"))
-stock_data <- stock_data %>% filter(date >= as.Date("2015-01-01") & date <= as.Date("2022-01-01"))
+tweet_data <- tweet_data %>% filter(date >= as.Date("2015-01-01") & date < as.Date("2022-01-01"))
+stock_data <- stock_data %>% filter(date >= as.Date("2015-01-01") & date < as.Date("2022-01-01"))
 
 
 head(merged_df)
@@ -41,7 +43,7 @@ head(merged_data)
 max(tweet_data$date)
 max(stock_data$date)
 
-merged_data$price_movement <- merged_data$close - merged_data$open
+merged_data$price_movement <- ((merged_data$close - merged_data$open) / merged_data$open) * 100
 
 daily_summary <- merged_data %>%
   group_by(date) %>%
@@ -49,17 +51,12 @@ daily_summary <- merged_data %>%
             price_movement = mean(price_movement))
 
 # Plot
-ggplot(daily_summary, aes(x = date)) +
-  geom_line(aes(y = total_likes, colour = "Total Likes")) +
-  geom_line(aes(y = price_movement, colour = "Price Movement")) +
-  labs(title = "Daily Total Likes and Price Movement Over Time",
-       x = "Date",
-       y = "Value") +
-  scale_colour_manual("", 
-                      breaks = c("Total Likes", "Price Movement"),
-                      values = c("blue", "red")) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
+ggplot(daily_summary, aes(x = total_likes, y = price_movement)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Tweet Likes vs Stock Price Movement",
+       x = "Total Likes",
+       y = "Price Movement")
 
 #correlation between sum of tweet likes in a day and TSLA stock price movement
 cor(daily_summary$total_likes, daily_summary$price_movement, use = "complete.obs")
