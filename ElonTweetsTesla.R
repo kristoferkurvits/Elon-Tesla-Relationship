@@ -32,11 +32,11 @@ head(stock_data)
 merged_data <- merge(tweet_data, stock_data, by = "date")
 head(merged_data)
 
-merged_data$price_movement <- merged_data$close - merged_data$open
+merged_data$price_movement <- ((merged_data$close - merged_data$open) / merged_data$open) * 100
 
 daily_summary <- merged_data %>%
   group_by(date) %>%
-  summarise(total_likes = sum(nlikes), 
+  summarise(total_likes = mean(nlikes), 
             price_movement = mean(price_movement))
 
 # Plot
