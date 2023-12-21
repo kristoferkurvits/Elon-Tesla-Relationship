@@ -11,6 +11,9 @@ install.packages("broom")
 install.packages("caret")
 install.packages("pROC")
 
+install.packages("glmnet")
+
+
 library(dplyr)
 library(tidyverse)
 library(lubridate)
@@ -38,8 +41,8 @@ for (file in csv_files) {
   #print(df_cleaned)
   tweet_data[[file]] <- df_cleaned
 }
-#
 
+#
 merged_df <- bind_rows(tweet_data)
 
 tweet_data <- merged_df
@@ -142,6 +145,85 @@ print(conf_matrix)
 # Specificity is very low at 0.2000, indicating that the model is not good at identifying the negative class.
 # Positive Predictive Value (PPV) and Negative Predictive Value (NPV) are around 0.54 and 0.56, respectively, which are not much better than a random guess.
 # Balanced Accuracy, which is the average of sensitivity and specificity, is 0.5307, just slightly better than a random guess, suggesting that the model's ability to classify both positive and negative classes is not impressive.
+
+
+###################### LASSO REGRESSION #####################
+
+
+library(glmnet)
+
+features <- daily_summary %>%
+  select(total_likes, total_replies, total_retweets, price_movement_binary)
+features
+
+# Split data into training and test sets
+set.seed(123) # For reproducibility
+
+# Create the partition
+training_indices <- createDataPartition(features$price_movement_binary, p = 0.8, list = FALSE)
+
+# Split the data
+train_data <- features[training_indices, ]
+test_data <- features[-training_indices, ]
+
+# Assuming your features are in a dataframe called 'train_data'
+# and the outcome variable is called 'price_movement_binary'
+
+# Prepare the matrix of predictors and the response variable.
+# Exclude the date variable and any other non-numeric predictors
+x <- model.matrix(price_movement_binary ~ . , train_data)[,-1]  # -1 to exclude intercept
+y <- train_data$price_movement_binary
+
+# glmnet requires a numeric matrix/vector input, so convert y to numeric if it's a factor
+if (is.factor(y)) {
+  y <- as.numeric(as.character(y)) - 1  # converting factor to numeric (0/1 for binary)
+}
+
+# Fit the Lasso model
+set.seed(123)  # For reproducibility
+cv_lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial")
+plot(cv_lasso)
+
+# Find the best lambda (regularization parameter)
+best_lambda <- cv_lasso$lambda.min
+
+# Now fit the model using the best lambda
+lasso_model <- glmnet(x, y, alpha = 1, lambda = best_lambda, family = "binomial")
+# Coefficients across a range of lambdas
+coef(lasso_model)
+# Intercept ((Intercept)): This is the baseline prediction when all other predictors are zero. The value 8.268400e-02 represents the log-odds of the outcome being 'Increase' when all other predictors are zero, since Lasso regression in glmnet is fitted using log-odds for binomial outcomes.
+# 
+# Total Likes (total_likes): The coefficient for total_likes has been shrunk to zero. This suggests that within the context of the Lasso model and the data provided, total_likes is not contributing to the prediction of price_movement_binary.
+# 
+# Total Replies (total_replies): Similarly, the coefficient for total_replies is zero, indicating no contribution to the prediction of price_movement_binary.
+# 
+# Total Retweets (total_retweets): The coefficient for total_retweets is very small and negative (-2.547782e-06). This indicates a very slight negative relationship with the outcome, suggesting that as total_retweets increases, the log-odds of the price movement being 'Increase' decreases, but the effect is minimal.
+
+
+
+# Predict on test data
+x_test <- model.matrix(~ ., test_data)[,-1]
+
+dim(x)
+dim(x_test)
+x_test <- model.matrix(~ . - 1, test_data)
+
+predictors_in_model <- rownames(lasso_model$beta) %>%
+  na.omit() %>%
+  as.character()
+x_test <- x_test[, predictors_in_model, drop = FALSE]
+
+predictions <- predict(lasso_model, newx = x_test, type = "response")
+test_data$predicted_class <- factor(test_data$predicted_class, levels = c("Decrease", "Increase"))
+
+test_data$price_movement_binary <- ifelse(test_data$price_movement_binary > 0, "Increase", "Decrease")
+test_data$price_movement_binary <- as.factor(test_data$price_movement_binary)
+# Evaluate the model
+conf_matrix <- confusionMatrix(test_data$predicted_class, test_data$price_movement_binary)
+print(conf_matrix)
+
+# Optionally, plot the coefficients
+plot(lasso_model, xvar = "lambda", label = TRUE)
 
 
 ####################### RANDOM FOREST #######################
