@@ -12,22 +12,25 @@ install.packages("caret")
 install.packages("pROC")
 
 install.packages("glmnet")
-
+install.packages("tidyquant")
 
 library(dplyr)
 library(tidyverse)
 library(lubridate)
+library(tidyquant)
 
 library(tidymodels)
 library(textrecipes)
 library(randomForest)
 
-library(broom)      # For tidying model outputs
+library(broom)
 library(caret)
+
 
 library(pROC)
 
 library(ggplot2)
+
 
 csv_files <- list.files(path="tweets",pattern= ".csv", full.names=TRUE)
 csv_files
@@ -35,110 +38,164 @@ needed_parameters <- c("id", "date", "tweet", "hashtags", "cashtags", "username"
 needed_parameters
 tweet_data <- list()
 for (file in csv_files) {
-  #print(file) 
+  #print(file) exit)=
+  
   df <- read.csv(file)
   df_cleaned <- df[, colnames(df) %in% needed_parameters]
   #print(df_cleaned)
   tweet_data[[file]] <- df_cleaned
 }
 
-#
-merged_df <- bind_rows(tweet_data)
 
-tweet_data <- merged_df
+tesla <- tq_get('TSLA',
+                from='2010-06-29',
+                to='2022-03-05',
+                get = "stock.prices")
+head(tesla)
+tesla_df <- tesla
+tesla$stockpricemove <- ((tesla$close-tesla$open)/tesla$open)*100
+head(tesla)
+sp500_data <- tq_get('^GSPC', from ='2010-06-29', to = '2022-03-05')
+head(sp500_data)
+sp500_data
+sp500_data$indexmove <- ((sp500_data$close-sp500_data$open)/sp500_data$open)*100
+tandi <- merge.data.frame(tesla,sp500_data,by="date")
+tandi$diffteslaindex <- tandi$stockpricemove - tandi$indexmove
+teslaindex <- tandi[,c("date","symbol.x","open.x","close.x","volume.x","stockpricemove"
+                       ,"symbol.y","open.y","close.y","volume.y","indexmove","diffteslaindex"
+)]
+colnames(teslaindex) <- c("date"
+                          ,"stock"
+                          ,"tesla_open"
+                          ,"tesla_close"
+                          ,"tesla_volume"
+                          ,"tesla_stock_move"
+                          ,"index"
+                          ,"index_open"
+                          ,"index_close"
+                          ,"index_volume"
+                          ,"index_move"
+                          ,"tesla_index_diff"
+)
+teslaindex
+file_path = "tesla/tesla_index20102022.csv"
+write.csv(teslaindex,file=file_path,row.names = FALSE)
+
+#
+tweet_data <- bind_rows(tweet_data)
 tweet_data <- tweet_data %>% distinct(link, .keep_all = TRUE)
 
-stock_data <- read.csv("tesla/tesla20102022.csv")
+
+stock_data <- teslaindex
 
 stock_data$date <- as.Date(stock_data$date)
 tweet_data$date <- as.Date(tweet_data$date)
+
 tweet_data <- tweet_data %>% filter(date >= as.Date("2015-01-01") & date < as.Date("2022-01-01"))
 stock_data <- stock_data %>% filter(date >= as.Date("2015-01-01") & date < as.Date("2022-01-01"))
 
-merged_data <- merge(tweet_data, stock_data, by = "date")
 
-merged_data$price_movement <- ((merged_data$close - merged_data$open) / merged_data$open) * 100
+start_date <- min(tweet_data$date)
+end_date <- max(tweet_data$date)
+start_date
+end_date
+
+new_dates <- seq(start_date,end_date, by="days")
+add_date_df <- data.frame(date=new_dates)
+add_date_df
+result_tweet_data = merge(add_date_df,tweet_data,all=TRUE)
+result_tweet_data
+tweet_data <- result_tweet_data
+merged_data <- merge(tweet_data, stock_data, by = "date")
 
 data <- merged_data
 
-data_grouped <- data %>%
-  group_by(date)
+colnames(data)
 
-# If you want to include multiple summaries
-daily_summary <- data_grouped %>%
-  summarise(
-    total_likes = sum(nlikes, na.rm = TRUE),
-    total_replies = sum(nreplies, na.rm = TRUE),
-    total_retweets = sum(nretweets, na.rm = TRUE),
-    volume = mean(volume, na.rm = TRUE),
-    price_movement = mean(price_movement, na.rm = TRUE)
-  )
+ggplot(data, aes(x = tesla_volume, y = tesla_stock_move)) + 
+  geom_point() +
+  labs(title = "Tesla Stock Movement vs Volume",
+       x = "Volume",
+       y = "Stock Movement") +
+  theme_minimal()
 
-# First, create a target binary variable for stock movement: 1 for increase, 0 for decrease/no change
-daily_summary$price_movement_binary <- ifelse(daily_summary$price_movement > 0, 1, 0)
+long_data <- data %>%
+  select(date, nlikes, nreplies, nretweets, tesla_stock_move, tesla_index_diff) %>%
+  pivot_longer(cols = c(nlikes, nreplies, nretweets), names_to = "metric", values_to = "count")
 
-daily_summary_long <- daily_summary %>%
-  pivot_longer(cols = c(total_likes, total_replies, total_retweets, volume), 
-               names_to = "metric", values_to = "value")
-
-# Now, create a scatter plot with faceting
-ggplot(daily_summary_long, aes(x = value, y = price_movement)) +
-  geom_point(aes(color = metric)) +  # Color points by metric for clarity
-  facet_wrap(~ metric, scales = "free_x") +  # Create a separate plot for each metric
-  labs(title = "Price Movement vs. Various Metrics",
-       x = "Metric Value",
-       y = "Price Movement (%)") +
+# Creating the scatter plot
+ggplot(long_data, aes(x = count, y = tesla_stock_move, color = metric)) +
+  geom_point() +
+  facet_wrap(~metric, scales = "free_x") +
+  labs(title = "Tesla Stock Movement vs Engagement Metrics",
+       x = "Count",
+       y = "Tesla Stock Movement") +
   theme_minimal() +
   theme(legend.position = "bottom")
 
-# To see the result
-print(daily_summary)
+# If you want to plot index_move on the same graph but different points
+ggplot(long_data, aes(x = count, y = tesla_index_diff, color = metric)) +
+  geom_point() +
+  facet_wrap(~metric, scales = "free_x") +
+  labs(title = "Difference between index and TSLA vs Engagement Metrics",
+       x = "Count",
+       y = "Index Movement") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
 
-#correlation between sum of tweet likes in a day and TSLA stock price movement
-cor(daily_summary$total_likes, daily_summary$price_movement, use = "complete.obs")
+
+#correlation between metrics and TSLA stock price movement
+cor(data$nlikes, data$tesla_stock_move, use = "complete.obs")
+cor(data$nreplies, data$tesla_stock_move, use = "complete.obs")
+cor(data$nretweets, data$tesla_stock_move, use = "complete.obs")
+
+######################### LOGISTIC REGRESSION #############################
+
+view(data)
+
+data$movement_binary <- ifelse(data$tesla_index_diff > 0, 1, 0)
 
 # Select features
-features <- daily_summary %>%
-  select(total_likes, total_replies, total_retweets, price_movement_binary)
+features <- data %>%
+  select(nlikes, nreplies, nretweets, movement_binary)
 
 # Split data into training and test sets
 set.seed(123) # For reproducibility
 
 
 # Create the partition
-training_indices <- createDataPartition(features$price_movement_binary, p = 0.8, list = FALSE)
+training_indices <- createDataPartition(features$movement_binary, p = 0.8, list = FALSE)
 
 # Split the data
 train_data <- features[training_indices, ]
 test_data <- features[-training_indices, ]
 
-test_data
+head(test_data)
+head(train_data)
 
 # Fit the logistic regression model
-logit_model <- glm(price_movement_binary ~ ., data = train_data, family = binomial)
+logit_model <- glm(movement_binary ~ ., data = train_data, family = binomial)
 
 # Summary of the model to see coefficients and significance
 summary(logit_model)
 
-# Predict on the test set
+# After predicting probabilities...
 test_data$predicted_class <- predict(logit_model, newdata = test_data, type = "response")
 
+# Convert probabilities to a binary outcome based on a threshold
+test_data$predicted_class_verbal <- ifelse(test_data$predicted_class > 0.5, "Increase", "Decrease")
+test_data$predicted_class_verbal <- factor(test_data$predicted_class_verbal, levels = c("Decrease", "Increase"))
 
-# Optionally, calculate and plot ROC curve
+# Ensure the actual binary outcome is also a factor with the same levels
+test_data$movement_binary_verbal <- ifelse(test_data$movement_binary > 0, "Increase", "Decrease")
+test_data$movement_binary_verbal <- factor(test_data$movement_binary_verbal, levels = c("Decrease", "Increase"))
 
-roc_curve <- roc(test_data$price_movement_binary, test_data$predicted_class)
+# ROC curve calculation using actual binary outcome and predicted probabilities
+roc_curve <- roc(as.numeric(test_data$movement_binary_verbal) - 1, test_data$predicted_class)
 plot(roc_curve)
 
-
-test_data$predicted_class <- ifelse(test_data$predicted_class > 0.5, "Increase", "Decrease")
-test_data$predicted_class <- factor(test_data$predicted_class, levels = c("Increase", "Decrease"))
-
-test_data$price_movement_binary <- ifelse(test_data$price_movement_binary > 0, "Increase", "Decrease")
-test_data$price_movement_binary <- factor(test_data$price_movement_binary, levels = c("Increase", "Decrease"))
-
-test_data
-# Evaluate model performance
-conf_matrix <- confusionMatrix(test_data$predicted_class, test_data$price_movement_binary)
+# Confusion matrix using verbal class predictions and actual binary outcome
+conf_matrix <- confusionMatrix(test_data$predicted_class_verbal, test_data$movement_binary_verbal)
 print(conf_matrix)
 
 # Sensitivity (also called the true positive rate or recall) is quite high at 0.8613, meaning the model is good at identifying the positive class.
@@ -146,49 +203,56 @@ print(conf_matrix)
 # Positive Predictive Value (PPV) and Negative Predictive Value (NPV) are around 0.54 and 0.56, respectively, which are not much better than a random guess.
 # Balanced Accuracy, which is the average of sensitivity and specificity, is 0.5307, just slightly better than a random guess, suggesting that the model's ability to classify both positive and negative classes is not impressive.
 
+######################### LOGISTIC REGRESSION #############################
+
+
 
 ###################### LASSO REGRESSION #####################
 
 
 library(glmnet)
 
-features <- daily_summary %>%
-  select(total_likes, total_replies, total_retweets, price_movement_binary)
-features
+# Select features
+features <- data %>%
+  select(nlikes, nreplies, nretweets, movement_binary)
+
+features$nlikes <- ifelse(is.na(features$nlikes), 0, features$nlikes)
+features$nreplies <- ifelse(is.na(features$nreplies), 0, features$nreplies)
+features$nretweets <- ifelse(is.na(features$nretweets), 0, features$nretweets)
+sum(is.na(features))
 
 # Split data into training and test sets
 set.seed(123) # For reproducibility
 
 # Create the partition
-training_indices <- createDataPartition(features$price_movement_binary, p = 0.8, list = FALSE)
+training_indices <- createDataPartition(features$movement_binary, p = 0.8, list = FALSE)
 
 # Split the data
-train_data <- features[training_indices, ]
-test_data <- features[-training_indices, ]
+train_data_lasso <- features[training_indices, ]
+test_data_lasso <- features[-training_indices, ]
 
-# Assuming your features are in a dataframe called 'train_data'
-# and the outcome variable is called 'price_movement_binary'
+# Ensure that the number of rows in the training data matches the length of training indices
+stopifnot(nrow(train_data_lasso) == length(training_indices))
 
-# Prepare the matrix of predictors and the response variable.
-# Exclude the date variable and any other non-numeric predictors
-x <- model.matrix(price_movement_binary ~ . , train_data)[,-1]  # -1 to exclude intercept
-y <- train_data$price_movement_binary
+# Prepare the matrix of predictors
+x <- model.matrix(movement_binary ~ . - 1, data = train_data_lasso) # -1 to exclude intercept
 
-# glmnet requires a numeric matrix/vector input, so convert y to numeric if it's a factor
-if (is.factor(y)) {
-  y <- as.numeric(as.character(y)) - 1  # converting factor to numeric (0/1 for binary)
-}
+y <- train_data_lasso$movement_binary
+
+# Ensure that the number of observations in y matches the number of rows in x
+sum(is.na(y))
 
 # Fit the Lasso model
-set.seed(123)  # For reproducibility
 cv_lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial")
+coef(lasso_model)
 plot(cv_lasso)
 
 # Find the best lambda (regularization parameter)
 best_lambda <- cv_lasso$lambda.min
 
 # Now fit the model using the best lambda
-lasso_model <- glmnet(x, y, alpha = 1, lambda = best_lambda, family = "binomial")
+#Try different alpha(penalty) values
+lasso_model <- glmnet(x, y, alpha = 0.1, lambda = best_lambda, family = "binomial")
 # Coefficients across a range of lambdas
 coef(lasso_model)
 # Intercept ((Intercept)): This is the baseline prediction when all other predictors are zero. The value 8.268400e-02 represents the log-odds of the outcome being 'Increase' when all other predictors are zero, since Lasso regression in glmnet is fitted using log-odds for binomial outcomes.
@@ -200,98 +264,33 @@ coef(lasso_model)
 # Total Retweets (total_retweets): The coefficient for total_retweets is very small and negative (-2.547782e-06). This indicates a very slight negative relationship with the outcome, suggesting that as total_retweets increases, the log-odds of the price movement being 'Increase' decreases, but the effect is minimal.
 
 
-
 # Predict on test data
-x_test <- model.matrix(~ ., test_data)[,-1]
+x_test <- model.matrix(~ ., test_data_lasso)
 
-dim(x)
-dim(x_test)
-x_test <- model.matrix(~ . - 1, test_data)
 
 predictors_in_model <- rownames(lasso_model$beta) %>%
   na.omit() %>%
   as.character()
 x_test <- x_test[, predictors_in_model, drop = FALSE]
 
-predictions <- predict(lasso_model, newx = x_test, type = "response")
-test_data$predicted_class <- factor(test_data$predicted_class, levels = c("Decrease", "Increase"))
 
-test_data$price_movement_binary <- ifelse(test_data$price_movement_binary > 0, "Increase", "Decrease")
-test_data$price_movement_binary <- as.factor(test_data$price_movement_binary)
-# Evaluate the model
-conf_matrix <- confusionMatrix(test_data$predicted_class, test_data$price_movement_binary)
+predictions <- predict(lasso_model, newx = x_test, type = "response")
+
+head(test_data_lasso)
+
+# Convert probabilities to a binary outcome based on a threshold
+test_data_lasso$predicted_class_verbal <- ifelse(predictions > 0.5, "Increase", "Decrease")
+test_data_lasso$predicted_class_verbal <- factor(test_data_lasso$predicted_class_verbal, levels = c("Decrease", "Increase"))
+
+# Assuming price_movement_binary_verbal is your actual outcome column and has been properly created:
+test_data_lasso$movement_binary_verbal <- ifelse(test_data_lasso$movement_binary > 0, "Increase", "Decrease")
+test_data_lasso$movement_binary_verbal <- factor(test_data_lasso$movement_binary_verbal, levels = c("Decrease", "Increase"))
+
+# Now calculate the confusion matrix
+conf_matrix <- confusionMatrix(test_data_lasso$predicted_class_verbal, test_data_lasso$movement_binary_verbal)
 print(conf_matrix)
 
 # Optionally, plot the coefficients
 plot(lasso_model, xvar = "lambda", label = TRUE)
 
-
-####################### RANDOM FOREST #######################
-split <- initial_split(features, prop = 0.8)
-train_data <- training(split)
-test_data <- testing(split)
-
-# Train the Random Forest model
-rf_spec <- rand_forest(trees = 100) %>%
-  set_mode("classification") %>%
-  set_engine("randomForest")
-
-# Fit model using a formula that specifies our binary outcome and all other columns as predictors
-train_data$price_movement_binary <- as.factor(train_data$price_movement_binary)
-
-test_data$price_movement_binary <- as.factor(test_data$price_movement_binary)
-# Now, fit the model with the outcome as a factor
-rf_fit <- rf_spec %>%
-  fit(price_movement_binary ~ ., data = train_data)
-
-# Now retry prediction
-rf_results <- rf_fit %>%
-  predict(test_data) %>%
-  bind_cols(test_data) %>%
-  metrics(truth = price_movement_binary, estimate = .pred_class)
-
-rf_results
-
-# The accuracy is the proportion of the total number of predictions that were correct. In this case, it's 0.494, or 49.4%, which indicates that the model is correct about half the time.
-# The kappa statistic (kap) measures the agreement between the predicted and actual classifications, corrected for the agreement that could happen by chance. A kappa value near 0 (0.000514 in this case) indicates that there is hardly any agreement between the predictions and the actuals other than what would be expected by chance.
-# Given this information, here is what you can interpret:
-# 
-# The model's performance is close to random guessing on your dataset, as indicated by an accuracy of 49.4%, which is nearly a 50/50 chance. This could suggest that the model is not capturing the patterns in the data effectively, or that the data doesn't contain strong signals for the model to learn from.
-# 
-# The kappa statistic being close to zero further confirms that the model is not performing well. A good model should have a kappa statistic significantly higher than zero.
-
-
-#Interpretation
-
-confusion_matrix <- confusionMatrix(rf_results$pred, rf_results$obs)
-print(confusion_matrix)
-
-predicted_probabilities <- predict(rf_fit, test_data, type = "prob")
-
-roc_curve <- roc(predicted_probabilities$.pred_0, predicted_probabilities$.pred_0)
-autoplot(roc_curve)
-
-
-model_importance <- importance(rf_fit$fit)
-
-# Make it into a data frame for easy plotting
-importance_df <- as.data.frame(model_importance)
-
-# Plotting variable importance
-importance_df$variable <- rownames(importance_df)
-
-ggplot(importance_df, aes(x = reorder(variable, MeanDecreaseGini), y = MeanDecreaseGini)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "Variable Importance", x = "Variables", y = "Importance") +
-  theme_minimal()
-
-# What is Feature Importance?
-#   Feature importance measures the relative contribution of each feature to the prediction power of the model. It is a way to understand which features are contributing the most to the model’s decisions.
-# 
-# How is it Calculated?
-#   In Random Forest, feature importance is typically calculated in one of two ways:
-#   
-#   Mean Decrease in Impurity (MDI): During the construction of the Random Forest, each feature contributes to the purity of the nodes it is used in. Purity is often measured by Gini impurity or entropy for classification, and variance for regression. A feature's importance in this case is the sum of the decrease in impurity it provides weighted by the proportion of samples that reached the nodes where the feature was used.
-# 
-# Mean Decrease in Accuracy (MDA): Also known as permutation importance, this involves shuffling the values of each feature one by one and measuring the decrease in the model's accuracy. A larger decrease indicates a more important feature.
+###################### LASSO REGRESSION #####################
