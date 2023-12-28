@@ -51,11 +51,8 @@ needed_parameters <- c("id", "date", "tweet", "hashtags", "cashtags", "username"
 needed_parameters
 tweet_data <- list()
 for (file in csv_files) {
-  #print(file) exit)=
-  
   df <- read.csv(file)
   df_cleaned <- df[, colnames(df) %in% needed_parameters]
-  #print(df_cleaned)
   tweet_data[[file]] <- df_cleaned
 }
 
