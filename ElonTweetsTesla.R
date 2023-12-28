@@ -14,7 +14,20 @@ install.packages("pROC")
 install.packages("glmnet")
 install.packages("tidyquant")
 
+install.packages("RANN")
+
+install.packages("leaps")
+
+install.packages("tidytext")
+
+install.packages("stringr")
+
+install.packages("quantmod")
+
+library(tidytext)
+
 library(dplyr)
+
 library(tidyverse)
 library(lubridate)
 library(tidyquant)
@@ -30,6 +43,7 @@ library(caret)
 library(pROC)
 
 library(ggplot2)
+library(stringr)
 
 
 csv_files <- list.files(path="tweets",pattern= ".csv", full.names=TRUE)
@@ -139,15 +153,15 @@ ggplot(long_data, aes(x = count, y = tesla_index_diff, color = metric)) +
   facet_wrap(~metric, scales = "free_x") +
   labs(title = "Difference between index and TSLA vs Engagement Metrics",
        x = "Count",
-       y = "Index Movement") +
+       y = "TSLA&Index relationship movement") +
   theme_minimal() +
   theme(legend.position = "bottom")
 
 
 #correlation between metrics and TSLA stock price movement
-cor(data$nlikes, data$tesla_stock_move, use = "complete.obs")
-cor(data$nreplies, data$tesla_stock_move, use = "complete.obs")
-cor(data$nretweets, data$tesla_stock_move, use = "complete.obs")
+cor(data$nlikes, data$tesla_index_diff, use = "complete.obs")
+cor(data$nreplies, data$tesla_index_diff, use = "complete.obs")
+cor(data$nretweets, data$tesla_index_diff, use = "complete.obs")
 
 ######################### LOGISTIC REGRESSION #############################
 
@@ -244,7 +258,7 @@ sum(is.na(y))
 
 # Fit the Lasso model
 cv_lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial")
-coef(lasso_model)
+coef(cv_lasso)
 plot(cv_lasso)
 
 # Find the best lambda (regularization parameter)
@@ -252,7 +266,7 @@ best_lambda <- cv_lasso$lambda.min
 
 # Now fit the model using the best lambda
 #Try different alpha(penalty) values
-lasso_model <- glmnet(x, y, alpha = 0.1, lambda = best_lambda, family = "binomial")
+lasso_model <- glmnet(x, y, alpha = 1, lambda = best_lambda, family = "binomial")
 # Coefficients across a range of lambdas
 coef(lasso_model)
 # Intercept ((Intercept)): This is the baseline prediction when all other predictors are zero. The value 8.268400e-02 represents the log-odds of the outcome being 'Increase' when all other predictors are zero, since Lasso regression in glmnet is fitted using log-odds for binomial outcomes.
@@ -294,3 +308,251 @@ print(conf_matrix)
 plot(lasso_model, xvar = "lambda", label = TRUE)
 
 ###################### LASSO REGRESSION #####################
+
+
+####### Author D. Tiidema ######
+#skript Tesla aktsia liikumise jaoks
+#https://www.codingfinance.com/post/2018-03-27-download-price/ 
+
+
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(tidyquant)
+
+tesla <- tq_get('TSLA',
+                from='2010-06-29',
+                to='2022-03-05',
+                get = "stock.prices")
+head(tesla)
+tesla_df <- tesla
+tesla$stockpricemove <- ((tesla$close-tesla$open)/tesla$open)*100
+head(tesla)
+sp500_data <- tq_get('^GSPC', from ='2010-06-29', to = '2022-03-05')
+head(sp500_data)
+sp500_data
+sp500_data$indexmove <- ((sp500_data$close-sp500_data$open)/sp500_data$open)*100
+tandi <- merge.data.frame(tesla,sp500_data,by="date")
+tandi$diffteslaindex <- abs(tandi$stockpricemove - tandi$indexmove)
+teslaindex <- tandi[,c("date","symbol.x","open.x","close.x","volume.x","stockpricemove"
+                       ,"symbol.y","open.y","close.y","volume.y","indexmove","diffteslaindex"
+)]
+colnames(teslaindex) <- c("date"
+                          ,"stock"
+                          ,"tesla_open"
+                          ,"tesla_close"
+                          ,"tesla_volume"
+                          ,"tesla_stock_move"
+                          ,"index"
+                          ,"index_open"
+                          ,"index_close"
+                          ,"index_volume"
+                          ,"index_move"
+                          ,"tesla_index_diff"
+)
+head(teslaindex, 20)
+
+
+needed_parameters <- c("id", "date", "tweet", "hashtags", "cashtags", "username", "link", "retweet", "nlikes", "nreplies", "nretweets")
+tweet_data <- lapply(csv_files, function(file) {
+  df <- read.csv(file)
+  df[, colnames(df) %in% needed_parameters]
+})
+tweet_data <- bind_rows(tweet_data) %>%
+  distinct()
+tweet_data$date <- as.Date(tweet_data$date)
+
+
+merged_data <- merge(tweet_data, teslaindex, by = "date") %>%
+  distinct()
+merged_data$price_movement <- ((merged_data$index_close - merged_data$index_open) / merged_data$index_open) * 100
+daily_summary <- merged_data %>%
+  group_by(date) %>%
+  summarise(total_likes = mean(nlikes), 
+            price_movement = mean(price_movement))
+
+merged_df <- bind_rows(tweet_data)
+head(merged_df)
+
+# Assign new data to the variables
+tweet_data <- merged_df
+stock_data <- daily_summary
+head(stock_data)
+
+stock_data$date <- as.Date(stock_data$date)
+tweet_data$date <- as.Date(tweet_data$date)
+
+head(stock_data, 20)
+merged_data <- merge(tweet_data, stock_data, by = "date")
+head(merged_data, 20)
+
+# Plot
+ggplot(daily_summary, aes(x = total_likes, y = price_movement)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Tweet Likes vs Stock Price Movement",
+       x = "Total Likes",
+       y = "Price Movement")
+
+#correlation between sum of tweet likes in a day and TSLA stock price movement
+cor(daily_summary$total_likes, daily_summary$price_movement, use = "complete.obs")
+
+#########################################################################################
+
+library(RANN)
+library(caret)
+library(dplyr)
+
+tweet_data_shorty <- tweet_data %>%
+  select(date, nlikes, nreplies, nretweets)
+
+merged_data <- merge(tweet_data_shorty, teslaindex, by = "date") %>%
+  mutate(price_movement = tesla_index_diff) %>%
+  distinct()
+
+#Jäta alles ainult numbrilised väärtused
+numeric_features <- sapply(merged_data, is.numeric)
+analysis_data <- merged_data[, numeric_features]
+
+# Skaleeri andmed (0-st 1ni)
+analysis_data <- scale(analysis_data)
+
+# Käivitage KNN imputeerimine, kus k on lähimate naabrite arv
+# Siin on k vaikimisi väärtus 10, aga saate seda vastavalt vajadusele muuta
+preProcessParams <- preProcess(analysis_data, method = 'knnImpute')
+analysis_data_imputed  <- predict(preProcessParams, analysis_data)
+
+# analysis_data_imputed <- knnImputation(analysis_data, k = 10)
+
+# Kontrolli, et andmed oleks ilma puuduvate väärtusteta
+sum(is.na(analysis_data_imputed))
+
+pca_result <- prcomp(analysis_data_imputed, center = TRUE, scale. = TRUE)
+
+summary(pca_result)
+loadings <- as.data.frame(pca_result$rotation)
+
+# Create a data frame of the standard deviations (square roots of the eigenvalues)
+sds <- data.frame(PC = paste0("PC", 1:length(pca_result$sdev)), SD = pca_result$sdev)
+
+# Create the scree plot
+library(ggplot2)
+ggplot(sds, aes(x = PC, y = SD)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(x = "Principal Component", y = "Standard Deviation", title = "Scree Plot")
+
+
+
+eigenvalues <- pca_result$sdev^2  # See rida arvutab iga peamise komponendi jaoks omaväärtused (eigenvalues), 
+# mis on tuletatud peamiste komponentide standardhälvete ruudust. PCA kontekstis on omaväärtus näitaja, kui palju variatsiooni 
+# (informatsiooni) iga peamine komponent andmetest kinni püüab. Suuremad omaväärtused tähendavad, et vastav komponent hoiab endas rohkem variatsiooni.
+loadings_pc1 <- pca_result$rotation[, 1]
+
+eigenvalues
+
+# Print the loadings for PC1
+print(pca_result$rotation[, 1])
+
+# Print the loadings for PC2
+print(pca_result$rotation[, 2])
+
+# Print the loadings for PC3
+print(pca_result$rotation[, 3])
+
+library(leaps)
+ 
+keywords <- c("tesla", "amp", "t.co", "spacex", "https", "erdayastronaut")
+
+for (keyword in keywords) {
+  tweet_data[[keyword]] <- str_detect(tweet_data$tweet, fixed(keyword, ignore_case = TRUE))
+}
+
+stock_data$price_movement_amplitude <- daily_summary$price_movement
+
+# Ühenda tweetide andmed ja aktsiahinna andmed kuupäeva alusel
+combined_data <- merge(tweet_data, stock_data, by = "date")
+
+# Arvuta, kas mõni märksõna esines päeva jooksul vähemalt ühes tweetis
+daily_keywords <- combined_data %>%
+  group_by(date) %>%
+  summarise_at(vars(keywords), any)
+
+final_data <- merge(daily_keywords, stock_data[, c("date", "price_movement_amplitude")], by = "date")
+subset_selection <- regsubsets(price_movement_amplitude ~ tesla + amp + t.co + spacex + https + erdayastronaut, data = final_data, nbest = 1, nvmax = NULL, method = "exhaustive")
+
+# Vaata tulemusi
+summary(subset_selection)
+
+# Analüüsi märksõnade mõju aktsia hinnale
+# model <- lm(price_movement_amplitude ~ Tesla + Stock + `electric car` + Space + Beef + TSLA, data = final_data)
+model <- lm(price_movement_amplitude ~ tesla + amp + t.co + spacex + https + erdayastronaut, data = final_data)
+summary(model)
+
+library(glmnet)
+library(leaps)
+
+# LASSO
+
+# Prepare the data
+x <- as.matrix(final_data[, c("tesla", "amp", "t.co", "spacex", "https", "erdayastronaut")])
+y <- final_data$price_movement_amplitude
+
+# Apply Lasso regression
+lasso_model <- glmnet(x, y, alpha = 1)
+
+# Get the coefficients
+coef(lasso_model, s = 0.01)
+
+
+# Which words are present most often
+
+library(tidytext)
+
+# Assuming 'tweet_data' is your data frame and 'tweet' is the column with tweet texts
+tweet_words <- tweet_data %>%
+  unnest_tokens(word, tweet)
+
+# anti_join(stop_words) # this removes common stop words
+
+tweet_words <- tweet_words %>%
+  anti_join(stop_words, by = "word")
+
+word_count <- tweet_words %>%
+  count(word, sort = TRUE) # this counts and sorts the words by frequency
+
+# View the most common words
+head(word_count, 20)
+
+library(knitr)
+
+top_20_words <- head(word_count, 20)
+kable_table <- kable(top_20_words, format = "html", caption = "Top 20 Words in WordCloud")
+
+library(ggplot2)
+
+ggplot(top_20_words, aes(x = reorder(word, n), y = n+2)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +  # See pöörab graafiku, et sõnad oleksid vertikaalselt
+  theme_minimal() +
+  labs(x = "Sõnad", y = "Sagedus", title = "Top 20 Words in WordCloud")
+
+# Tabeli kuvamine R konsoolis
+print(kable_table)
+
+# Tabeli salvestamine HTML-failina
+writeLines(kable_table, "top_20_words.html")
+
+# Install and load the wordcloud package
+if (!require(wordcloud)) install.packages("wordcloud")
+library(wordcloud)
+
+# Assuming 'word_count' is your data frame with words and their frequencies
+wordcloud(words = word_count$word, freq = word_count$n, min.freq = 1,
+          max.words = 200, random.order = FALSE, rot.per = 0.35, 
+          colors = brewer.pal(8, "Dark2"))
+dev.new()
+par(mar = c(5, 4, 4, 2) + 0.1) # You may adjust these values as needed
+wordcloud(words = word_count$word, freq = word_count$n, min.freq = 1,
+          max.words = 200, random.order = FALSE, rot.per = 0.35, 
+          colors = brewer.pal(8, "Dark2"))
